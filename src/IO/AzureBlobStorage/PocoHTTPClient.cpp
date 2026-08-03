@@ -34,8 +34,12 @@ namespace DB::ErrorCodes
 namespace DB::FailPoints
 {
     extern const char azure_inject_forbidden_response[];
-    extern const char azure_inject_auth_failure[];
-    extern const char azure_inject_timeout[];
+    extern const char azure_inject_forbidden_response_once[];
+    extern const char azure_inject_auth_failure_on_request[];
+    extern const char azure_inject_auth_failure_on_request_once[];
+    extern const char azure_inject_poco_timeout[];
+    extern const char azure_inject_poco_timeout_once[];
+    extern const char azure_inject_bad_request[];
 }
 
 namespace ProfileEvents
@@ -153,26 +157,38 @@ std::unique_ptr<Azure::Core::Http::RawResponse> PocoAzureHTTPClient::Send(
     {
         throw Azure::Storage::StorageException::CreateFromResponse(
             std::make_unique<Azure::Core::Http::RawResponse>(
-                1, 0,
+                1, 1,
                 Azure::Core::Http::HttpStatusCode::Forbidden,
                 "Forbidden (injected by failpoint)"));
     });
 
-    /// Test-only: simulate a credential/RBAC token-acquisition failure (not an HTTP response).
-    fiu_do_on(DB::FailPoints::azure_inject_auth_failure,
+    /// Test-only: one-shot 403, for the transient RBAC-propagation window.
+    fiu_do_on(DB::FailPoints::azure_inject_forbidden_response_once,
+    {
+        throw Azure::Storage::StorageException::CreateFromResponse(
+            std::make_unique<Azure::Core::Http::RawResponse>(
+                1, 1, Azure::Core::Http::HttpStatusCode::Forbidden,
+                "Forbidden (injected by failpoint)"));
+    });
+
+    /// Test-only: make an AuthenticationException escape the read path, to pin its retry
+    /// classification. Production throws it from the SDK token policy before the transport.
+    fiu_do_on(DB::FailPoints::azure_inject_auth_failure_on_request,
+    {
+        throw Azure::Core::Credentials::AuthenticationException("Authentication failed (injected by failpoint)");
+    });
+    fiu_do_on(DB::FailPoints::azure_inject_auth_failure_on_request_once,
     {
         throw Azure::Core::Credentials::AuthenticationException("Authentication failed (injected by failpoint)");
     });
 
-    /// Test-only: simulate a connect/request timeout surfaced as a 408 (the #110724 path), mirroring the
-    /// synthetic 408 a Poco::TimeoutException becomes.
-    fiu_do_on(DB::FailPoints::azure_inject_timeout,
+    /// Test-only: a non-retryable HTTP error, to prove a genuine failure still marks the part broken.
+    fiu_do_on(DB::FailPoints::azure_inject_bad_request,
     {
         throw Azure::Storage::StorageException::CreateFromResponse(
             std::make_unique<Azure::Core::Http::RawResponse>(
-                1, 0,
-                Azure::Core::Http::HttpStatusCode::RequestTimeout,
-                "Request timeout (injected by failpoint)"));
+                1, 1, Azure::Core::Http::HttpStatusCode::BadRequest,
+                "Bad request (injected by failpoint)"));
     });
 
     CurrentMetrics::Increment metric_increment{CurrentMetrics::AzureRequests};
@@ -364,6 +380,13 @@ std::unique_ptr<Azure::Core::Http::RawResponse> PocoAzureHTTPClient::makeRequest
 
     try
     {
+        /// Test-only: raise the real Poco timeout so the Poco::TimeoutException -> TransportException
+        /// conversion below is the code under test, not a fabricated status code.
+        fiu_do_on(DB::FailPoints::azure_inject_poco_timeout,
+            { throw Poco::TimeoutException("connect timed out (injected by failpoint)"); });
+        fiu_do_on(DB::FailPoints::azure_inject_poco_timeout_once,
+            { throw Poco::TimeoutException("connect timed out (injected by failpoint)"); });
+
         Poco::Net::HTTPRequest poco_request(Poco::Net::HTTPRequest::HTTP_1_1);
 
         poco_request.setMethod(method);
