@@ -314,3 +314,36 @@ def test_transient_forbidden_on_write_succeeds(started_cluster):
         "Write at attempt"
     ), "the CH-level write retry loop was never exercised"
     assert not node.contains_in_log(BROKEN_PART_LOG)
+
+
+def test_check_table_surfaces_transient_not_verified(started_cluster):
+    # checkDataPart now rethrows a retryable error instead of returning empty checksums, so a
+    # verification caller surfaces the transient failure rather than masquerading it as verified.
+    # This pins the StorageMergeTree::checkDataNext caller (StorageMergeTree.cpp:3417/3438): plain
+    # MergeTree on purpose, because the rest of the suite is ReplicatedMergeTree, whose CHECK TABLE
+    # routes through the part-check thread instead. Before the fix checkDataPart returned empty on
+    # the retryable 403 and checkDataNext reported the part as a verified "OK" (is_passed=true) — a
+    # silent false pass; with the fix the 403 is rethrown and CHECK TABLE fails with the real error.
+    node.query("DROP TABLE IF EXISTS t_check_mt SYNC")
+    node.query(
+        """
+        CREATE TABLE t_check_mt (k UInt64, v String)
+        ENGINE = MergeTree() ORDER BY k
+        SETTINGS storage_policy = 'azure_policy', min_bytes_for_wide_part = 0
+        """
+    )
+    node.query("INSERT INTO t_check_mt SELECT number, toString(number) FROM numbers(100)")
+    assert node.query("SELECT count() FROM t_check_mt").strip() == "100"
+
+    # Force the check to read the part data from Azure (not a local cache) so the failpoint fires.
+    node.query("SYSTEM DROP FILESYSTEM CACHE")
+    node.query("SYSTEM DROP MARK CACHE")
+
+    node.query("SYSTEM ENABLE FAILPOINT azure_inject_forbidden_response")
+    try:
+        err = node.query_and_get_error("CHECK TABLE t_check_mt")
+        assert "403" in err or "Forbidden" in err, f"expected surfaced transient error, got:\n{err}"
+    finally:
+        node.query("SYSTEM DISABLE FAILPOINT azure_inject_forbidden_response")
+
+    node.query("DROP TABLE IF EXISTS t_check_mt SYNC")
