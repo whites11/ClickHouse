@@ -16,11 +16,32 @@
                 <retry_initial_backoff_ms>10</retry_initial_backoff_ms>
                 <retry_max_backoff_ms>50</retry_max_backoff_ms>
             </azure_disk>
+            <!-- Same as azure_disk but with the SDK RetryPolicy OFF (max_tries=0 => MaxRetries=0, so the
+                 SDK makes a single attempt and never retries a returned 403). Used only by the write-side
+                 transient test: with the SDK retry on, a returned one-shot 403 is absorbed one layer below
+                 execWithRetry, so that config cannot tell a retrying write loop from a fail-fast one. -->
+            <azure_disk_nosdk>
+                <type>azure_blob_storage</type>
+                <storage_account_url from_env="AZURITE_STORAGE_ACCOUNT_URL"/>
+                <container_name>cont</container_name>
+                <skip_access_check>false</skip_access_check>
+                <account_name>devstoreaccount1</account_name>
+                <account_key>Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==</account_key>
+                <max_single_read_retries>2</max_single_read_retries>
+                <max_single_download_retries>2</max_single_download_retries>
+                <max_unexpected_write_error_retries>2</max_unexpected_write_error_retries>
+                <max_tries>0</max_tries>
+                <retry_initial_backoff_ms>10</retry_initial_backoff_ms>
+                <retry_max_backoff_ms>50</retry_max_backoff_ms>
+            </azure_disk_nosdk>
         </disks>
         <policies>
             <azure_policy>
                 <volumes><main><disk>azure_disk</disk></main></volumes>
             </azure_policy>
+            <azure_policy_nosdk>
+                <volumes><main><disk>azure_disk_nosdk</disk></main></volumes>
+            </azure_policy_nosdk>
         </policies>
     </storage_configuration>
 </clickhouse>

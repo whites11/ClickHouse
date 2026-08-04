@@ -85,7 +85,7 @@ def clean_state(started_cluster):
     _disable_all()
 
 
-def _create_table(name, wide=True, stop_merges=False):
+def _create_table(name, wide=True, stop_merges=False, policy="azure_policy"):
     node.query(f"DROP TABLE IF EXISTS {name} SYNC")
     part_setting = (
         "min_bytes_for_wide_part = 0" if wide else "min_bytes_for_wide_part = 1073741824"
@@ -95,7 +95,7 @@ def _create_table(name, wide=True, stop_merges=False):
         CREATE TABLE {name} (k UInt64, v String)
         ENGINE = ReplicatedMergeTree('/clickhouse/tables/{name}', 'r1')
         ORDER BY k
-        SETTINGS storage_policy = 'azure_policy', {part_setting}
+        SETTINGS storage_policy = '{policy}', {part_setting}
         """
     )
     # Keep the three inserted parts distinct so a later OPTIMIZE has real work to merge — the merge
@@ -282,3 +282,35 @@ def test_permanent_forbidden_on_write_fails(started_cluster):
         assert "403" in err or "Forbidden" in err
     finally:
         node.query("SYSTEM DISABLE FAILPOINT azure_inject_forbidden_response")
+
+
+def test_transient_forbidden_on_write_succeeds(started_cluster):
+    # The write-side counterpart to test_transient_error_read_succeeds, and the only case that pins the
+    # CH-level write contract the fix widened: WriteBufferFromAzureBlobStorage::execWithRetry classifying
+    # a 403 as retryable (isRetryableAzureException). It runs on azure_policy_nosdk, whose max_tries=0
+    # turns the SDK RetryPolicy off, because with the SDK retry on (the default azure_disk, max_tries=2)
+    # a *returned* one-shot 403 is retried by the SDK one layer below execWithRetry — the upload then
+    # succeeds even if the CH write loop stopped retrying 403, so that config cannot detect the
+    # regression the reviewer flagged. test_permanent_forbidden_on_write_fails has the same blind spot:
+    # its final error text is "403" whether the loop retried-then-gave-up or failed fast.
+    #
+    # With the SDK retry off, the returned one-shot 403 reaches execWithRetry, which must retry it for
+    # the INSERT to succeed; the "Write at attempt" debug line is emitted only by that CH-level retry
+    # (WriteBufferFromAzureBlobStorage.cpp:132), so it proves the write loop — not the SDK — recovered.
+    # stop_merges keeps the armed INSERT's part upload the only Azure traffic in flight, so the global
+    # one-shot lands on the upload PUT rather than a stray background merge.
+    _create_table("t_write_transient", stop_merges=True, policy="azure_policy_nosdk")
+
+    node.query("SYSTEM ENABLE FAILPOINT azure_inject_forbidden_response_once")
+    try:
+        node.query(
+            "INSERT INTO t_write_transient SELECT number + 300, toString(number) FROM numbers(100)"
+        )
+    finally:
+        node.query("SYSTEM DISABLE FAILPOINT azure_inject_forbidden_response_once")
+
+    assert node.query("SELECT count() FROM t_write_transient").strip() == "400"
+    assert node.contains_in_log(
+        "Write at attempt"
+    ), "the CH-level write retry loop was never exercised"
+    assert not node.contains_in_log(BROKEN_PART_LOG)
