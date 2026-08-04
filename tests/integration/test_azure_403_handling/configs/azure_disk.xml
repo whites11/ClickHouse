@@ -1,4 +1,5 @@
 <clickhouse>
+    <logger><level>debug</level></logger>
     <storage_configuration>
         <disks>
             <azure_disk>
@@ -8,9 +9,12 @@
                 <skip_access_check>false</skip_access_check>
                 <account_name>devstoreaccount1</account_name>
                 <account_key>Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==</account_key>
-                <max_single_read_retries>3</max_single_read_retries>
-                <max_single_download_retries>3</max_single_download_retries>
-                <max_unexpected_write_error_retries>3</max_unexpected_write_error_retries>
+                <max_single_read_retries>2</max_single_read_retries>
+                <max_single_download_retries>2</max_single_download_retries>
+                <max_unexpected_write_error_retries>2</max_unexpected_write_error_retries>
+                <max_tries>2</max_tries>
+                <retry_initial_backoff_ms>10</retry_initial_backoff_ms>
+                <retry_max_backoff_ms>50</retry_max_backoff_ms>
             </azure_disk>
         </disks>
         <policies>

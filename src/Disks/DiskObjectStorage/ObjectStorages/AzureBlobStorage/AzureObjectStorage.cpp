@@ -1,3 +1,4 @@
+#include <ranges>
 #include <algorithm>
 #include <exception>
 #include <optional>
@@ -468,12 +469,23 @@ void AzureObjectStorage::removeObjectsBatchIfExists(
         {
             client_ptr->SubmitBatch(requests);
         }
+        catch (const Azure::Storage::StorageException & e)
+        {
+            /// A batch-level failure skips the per-object response loop below, so record one Delete attempt
+            /// per object before rethrowing. Preserve the real HTTP status (as the per-object path below
+            /// does) so these failures stay queryable by error_code.
+            const auto elapsed = watch.elapsedMicroseconds() / object_batch.size();
+            for (const auto & object : object_batch)
+                add_log_entry(object, elapsed, static_cast<Int32>(e.StatusCode), e.Message);
+            throw;
+        }
         catch (...)
         {
-            /// A batch-level failure skips the per-object loop below, so record the delete attempts before rethrowing.
+            /// Non-Azure failure (e.g. a credential AuthenticationException) carries no HTTP status.
+            const auto elapsed = watch.elapsedMicroseconds() / object_batch.size();
             const auto batch_error = getCurrentExceptionMessage(false);
             for (const auto & object : object_batch)
-                add_log_entry(object, watch.elapsedMicroseconds() / object_batch.size(), -1, batch_error);
+                add_log_entry(object, elapsed, -1, batch_error);
             throw;
         }
 
