@@ -94,6 +94,7 @@ def generate_buzz_config(workspace_path: Path, log_path: str | None = None):
             "paimonlocal",
             "merge",
             "distributed",
+            "remote",
             "dictionary",
             "generaterandom",
             "azureblobstorage",
