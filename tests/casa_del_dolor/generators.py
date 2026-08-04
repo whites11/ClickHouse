@@ -19,6 +19,10 @@ from tests.integration.helpers.config_cluster import (
 
 
 class Generator:
+    # Display name used in log messages; lacasadeldolor_job.py greps for
+    # "<name> exited with code", so keep the two in sync.
+    name = "Load generator"
+
     def __init__(self):
         pass
 
@@ -44,6 +48,8 @@ class Generator:
 
 
 class BuzzHouseGenerator(Generator):
+    name = "BuzzHouse"
+
     def __init__(self, args, cluster, catalog_server, server_settings):
         super().__init__()
         self.binary: pathlib.Path = args.client_binary

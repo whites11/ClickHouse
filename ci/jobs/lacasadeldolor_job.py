@@ -498,7 +498,9 @@ python3 {repo_dir}/tests/casa_del_dolor/dolor.py --seed={session_seed} --generat
     fuzzer_exit_code = 0
     node_exit_codes: list[int] = []
     try:
-        pattern1 = re.compile(r"Load generator exited with code:\s*(-?\d+)")
+        pattern1 = re.compile(
+            r"(?:Load generator|BuzzHouse) exited with code:\s*(-?\d+)"
+        )
         # Broadened: previously matched only "(Logical error|Crash|Sanitizer error) in instance",
         # which missed OOM kills, raw signals (SEGV/ABRT), and explicit "Server died" messages.
         pattern2 = re.compile(

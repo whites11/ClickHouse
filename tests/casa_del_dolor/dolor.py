@@ -762,62 +762,58 @@ while all_running and (not reached_limit):
         tables_oracle.collect_table_hash_after_shutdown(cluster, logger, dump_table)
 
 good_exit = True
+
+# Check load generator first
 if client.process.poll() is None:
     client.process.kill()
     client.process.wait()
-logger.info(f"Load generator exited with code: {client.process.returncode}")
-# Validate whenever a server is down, regardless of whether the run also hit the
-# time limit. reached_limit alone is the normal, clean end of fuzzing, but a
-# crash that lands in the same loop iteration as the timeout leaves all_running
-# False with reached_limit True; gating on `not reached_limit` here would skip
-# validation and report that crash-at-timeout boundary as success.
-if not all_running:
-    # Check load generator first
-    good_exit = generator.validate_exit_code(client.process.returncode)
-    for server in servers:
-        # First check if not running
-        pid = server.get_process_pid("clickhouse")
-        if pid is None:
-            logger.info(f"The server {server.name} is not running")
-            if not server.clickhouse_exec_id:
-                # No exec ID to inspect — cannot verify clean exit; treat as failure
-                logging.error(
-                    f"Server {server.name} is unexpectedly gone with no exec ID to inspect"
-                )
-                good_exit = False
-        else:
-            server.stop_clickhouse(stop_wait_sec=30, kill=False)
-            if server.get_process_pid("clickhouse") is not None:
-                logger.warning(
-                    f"Instance {server.name} is still running after stop command"
-                )
-                good_exit = False
-        if server.clickhouse_exec_id:
-            try:
-                exec_info = cluster.docker_client.api.exec_inspect(
-                    server.clickhouse_exec_id
-                )
-                exit_code = exec_info["ExitCode"]
-                logging.info(f"The server {server.name} exited with code: {exit_code}")
-                good_exit = good_exit and exit_code in (
-                    -9,
-                    -15,
-                    0,
-                    137,
-                    143,
-                )  # 137 is SIGKILL, 143 is SIGTERM
-            except Exception as ex:
-                logging.warning(
-                    f"Could not inspect exec for {server.name} - already gone: {ex}"
-                )
-        if server.grep_in_log("Logical error:", from_host=True):
-            logging.error(f"Logical error in instance '{server.name}'")
+logger.info(f"{generator.name} exited with code: {client.process.returncode}")
+good_exit = generator.validate_exit_code(client.process.returncode)
+
+for server in servers:
+    # First check if not running
+    pid = server.get_process_pid("clickhouse")
+    if pid is None:
+        logger.info(f"The server {server.name} is not running")
+        if not server.clickhouse_exec_id:
+            # No exec ID to inspect — cannot verify clean exit; treat as failure
+            logging.error(
+                f"Server {server.name} is unexpectedly gone with no exec ID to inspect"
+            )
             good_exit = False
-        if server.grep_in_log("<Fatal>", from_host=True):
-            logging.error(f"Crash in instance '{server.name}'")
+    else:
+        server.stop_clickhouse(stop_wait_sec=30, kill=False)
+        if server.get_process_pid("clickhouse") is not None:
+            logger.warning(
+                f"Instance {server.name} is still running after stop command"
+            )
             good_exit = False
-        if server.grep_in_log("Sanitizer:", filename="stderr.log", from_host=True):
-            logging.error(f"Sanitizer error in instance '{server.name}'")
-            good_exit = False
+    if server.clickhouse_exec_id:
+        try:
+            exec_info = cluster.docker_client.api.exec_inspect(
+                server.clickhouse_exec_id
+            )
+            exit_code = exec_info["ExitCode"]
+            logging.info(f"The server {server.name} exited with code: {exit_code}")
+            good_exit = good_exit and exit_code in (
+                -9,
+                -15,
+                0,
+                137,
+                143,
+            )  # 137 is SIGKILL, 143 is SIGTERM
+        except Exception as ex:
+            logging.warning(
+                f"Could not inspect exec for {server.name} - already gone: {ex}"
+            )
+    if server.grep_in_log("Logical error:", from_host=True):
+        logging.error(f"Logical error in instance '{server.name}'")
+        good_exit = False
+    if server.grep_in_log("<Fatal>", from_host=True):
+        logging.error(f"Crash in instance '{server.name}'")
+        good_exit = False
+    if server.grep_in_log("Sanitizer:", filename="stderr.log", from_host=True):
+        logging.error(f"Sanitizer error in instance '{server.name}'")
+        good_exit = False
 
 sys.exit(0 if good_exit else 1)
