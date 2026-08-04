@@ -210,7 +210,7 @@ namespace
                             reinterpret_cast<const uint8_t *>(memory.data()), total_size);
                         block_blob_client.Upload(stream);
                     },
-                    settings->max_single_download_retries, dest_blob, log);
+                    settings->max_unexpected_write_error_retries, dest_blob, log);
             }
             catch (const Azure::Core::RequestFailedException & e)
             {
@@ -248,7 +248,7 @@ namespace
                         fiu_do_on(FailPoints::azure_inject_forbidden_on_upload, { injectForbiddenOnUpload(); });
                         block_blob_client.CommitBlockList(block_ids);
                     },
-                    settings->max_single_download_retries, dest_blob, log);
+                    settings->max_unexpected_write_error_retries, dest_blob, log);
             }
             catch (const Azure::Core::RequestFailedException & e)
             {
@@ -361,7 +361,7 @@ namespace
                             reinterpret_cast<const uint8_t *>(memory.data()), size_to_stage);
                         block_blob_client.StageBlock(block_id, stream);
                     },
-                    settings->max_single_download_retries, dest_blob, log);
+                    settings->max_unexpected_write_error_retries, dest_blob, log);
             }
             catch (const Azure::Core::RequestFailedException & e)
             {
@@ -518,6 +518,7 @@ void copyAzureBlobStorageFile(
         /// that would start a second writer to dest_blob while the copy is still pending.
         if (async_operation.has_value())
         {
+            /// Polling copy status is a read, so it uses the read/download retry budget; the upload ops above use the write budget.
             auto copy_response = retryAzureOperation(
                 [&] { return async_operation->PollUntilDone(std::chrono::milliseconds(100)); },
                 settings->max_single_download_retries, dest_blob, log);
