@@ -90,6 +90,7 @@ bool isRetryableException(std::exception_ptr exception_ptr)
     catch (const Azure::Core::Credentials::AuthenticationException &)
     {
         /// A token / RBAC-not-provisioned failure near startup is transient, not a corrupt part.
+        /// Separate catch: AuthenticationException derives from std::exception, not RequestFailedException.
         return true;
     }
 #endif

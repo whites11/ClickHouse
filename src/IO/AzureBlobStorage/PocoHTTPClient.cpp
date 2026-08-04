@@ -152,23 +152,26 @@ std::unique_ptr<Azure::Core::Http::RawResponse> PocoAzureHTTPClient::Send(
     Azure::Core::Http::Request & request,
     Azure::Core::Context const & context)
 {
-    /// Test-only: simulate an Azure 403 (the RBAC-propagation window) at the transport layer.
+    /// Test-only: simulate an Azure 403 (the RBAC-propagation window) by RETURNING a 403 response,
+    /// exactly as the real transport does. Returning (not throwing) is what makes it traverse the SDK
+    /// RetryPolicy and actually exercise StatusCodes.insert(Forbidden) in AzureBlobStorageCommon.cpp;
+    /// a thrown StorageException would bypass the retry policy and only test the ClickHouse-level loops.
     fiu_do_on(DB::FailPoints::azure_inject_forbidden_response,
     {
-        throw Azure::Storage::StorageException::CreateFromResponse(
-            std::make_unique<Azure::Core::Http::RawResponse>(
-                1, 1,
-                Azure::Core::Http::HttpStatusCode::Forbidden,
-                "Forbidden (injected by failpoint)"));
+        auto injected = std::make_unique<Azure::Core::Http::RawResponse>(
+            1, 1, Azure::Core::Http::HttpStatusCode::Forbidden, "Forbidden (injected by failpoint)");
+        injected->SetBodyStream(std::make_unique<EmptyBodyStream>());
+        return injected;
     });
 
-    /// Test-only: one-shot 403, for the transient RBAC-propagation window.
+    /// Test-only: one-shot 403 for the transient RBAC-propagation window (returned, not thrown, so the
+    /// SDK RetryPolicy retries it and the second, real attempt succeeds).
     fiu_do_on(DB::FailPoints::azure_inject_forbidden_response_once,
     {
-        throw Azure::Storage::StorageException::CreateFromResponse(
-            std::make_unique<Azure::Core::Http::RawResponse>(
-                1, 1, Azure::Core::Http::HttpStatusCode::Forbidden,
-                "Forbidden (injected by failpoint)"));
+        auto injected = std::make_unique<Azure::Core::Http::RawResponse>(
+            1, 1, Azure::Core::Http::HttpStatusCode::Forbidden, "Forbidden (injected by failpoint)");
+        injected->SetBodyStream(std::make_unique<EmptyBodyStream>());
+        return injected;
     });
 
     /// Test-only: make an AuthenticationException escape the read path, to pin its retry
@@ -183,12 +186,13 @@ std::unique_ptr<Azure::Core::Http::RawResponse> PocoAzureHTTPClient::Send(
     });
 
     /// Test-only: a non-retryable HTTP error, to prove a genuine failure still marks the part broken.
+    /// Returned (not thrown) so it too goes through the SDK RetryPolicy, which must NOT retry a 400.
     fiu_do_on(DB::FailPoints::azure_inject_bad_request,
     {
-        throw Azure::Storage::StorageException::CreateFromResponse(
-            std::make_unique<Azure::Core::Http::RawResponse>(
-                1, 1, Azure::Core::Http::HttpStatusCode::BadRequest,
-                "Bad request (injected by failpoint)"));
+        auto injected = std::make_unique<Azure::Core::Http::RawResponse>(
+            1, 1, Azure::Core::Http::HttpStatusCode::BadRequest, "Bad request (injected by failpoint)");
+        injected->SetBodyStream(std::make_unique<EmptyBodyStream>());
+        return injected;
     });
 
     CurrentMetrics::Increment metric_increment{CurrentMetrics::AzureRequests};
